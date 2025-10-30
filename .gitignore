@@ -1,3 +1,18 @@
+# Python caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Env files
+.env
+backend/.env
+
+# Node
+frontend/node_modules/
+frontend/.vite/
+*.log
 # Python
 __pycache__/
 *.pyc
