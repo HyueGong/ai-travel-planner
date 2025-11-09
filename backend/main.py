@@ -5,10 +5,12 @@ from supabase import create_client
 from dotenv import load_dotenv
 import os
 from xf_asr import transcribe_audio_bytes
-from llm import generate_travel_plan
+from llm import generate_structured_travel_plan
 from typing import Optional, List, Dict
 from decimal import Decimal, InvalidOperation
 import re
+import json
+import requests
 
 # 加载环境变量，明确从 backend/.env 读取
 from pathlib import Path
@@ -35,6 +37,7 @@ if not supabase_url or not supabase_key:
     raise ValueError("Supabase URL or Anon Key is missing. Check your environment variables.")
 
 supabase = create_client(supabase_url, supabase_key)
+amap_web_key = os.getenv("AMAP_WEB_KEY") or os.getenv("AMAP_REST_KEY")
 
 # 数据模型
 class UserLogin(BaseModel):
@@ -111,15 +114,29 @@ def history(user_id: str):
     try:
         # 查询 travel_plans 表（包含 transcript 和 plan_text）
         try:
-            data = supabase.table("travel_plans").select("id, transcript, plan_text, created_at").eq("user_id", user_id).order("created_at", desc=True).execute()
+            data = supabase.table("travel_plans").select("id, transcript, plan_text, plan_structured, created_at").eq("user_id", user_id).order("created_at", desc=True).execute()
+            if getattr(data, "error", None):
+                # 兼容旧 schema（缺少 plan_structured 字段）
+                print("⚠️ Supabase history select error, retrying without plan_structured:", data.error)
+                data = supabase.table("travel_plans").select("id, transcript, plan_text, created_at").eq("user_id", user_id).order("created_at", desc=True).execute()
             rows = data.data or []
             # 将字段名转换为前端期望的格式
             items = []
             for row in rows:
+                structured = None
+                raw_structured = row.get("plan_structured")
+                if isinstance(raw_structured, dict):
+                    structured = raw_structured
+                elif isinstance(raw_structured, str):
+                    try:
+                        structured = json.loads(raw_structured)
+                    except json.JSONDecodeError:
+                        structured = None
                 items.append({
                     "id": row.get("id"),
                     "text": row.get("transcript", ""),  # 显示ASR结果
                     "plan": row.get("plan_text", ""),  # 行程内容
+                    "plan_structured": structured,
                     "created_at": row.get("created_at")
                 })
             return {"items": items}
@@ -134,6 +151,7 @@ def history(user_id: str):
                     "id": row.get("id"),
                     "text": row.get("text", ""),
                     "plan": "",  # 没有行程数据
+                    "plan_structured": None,
                     "created_at": row.get("created_at")
                 })
             return {"items": items}
@@ -474,6 +492,178 @@ def _parse_expense_from_text(text: str) -> Dict[str, Optional[str]]:
     }
 
 
+_geocode_cache: Dict[str, Optional[tuple[float, float]]] = {}
+
+
+def geocode_with_amap(address: Optional[str], city: Optional[str] = None) -> Optional[tuple[float, float]]:
+    if not amap_web_key or not address:
+        return None
+    query = address.strip()
+    if not query:
+        return None
+    cache_key = f"{query}|{city or ''}"
+    if cache_key in _geocode_cache:
+        return _geocode_cache[cache_key]
+    params = {
+        "key": amap_web_key,
+        "address": query,
+    }
+    if city:
+        params["city"] = city
+    try:
+        resp = requests.get("https://restapi.amap.com/v3/geocode/geo", params=params, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("status") == "1" and data.get("geocodes"):
+            location = data["geocodes"][0].get("location")
+            if location:
+                try:
+                    lng_str, lat_str = location.split(",")
+                    lng = float(lng_str)
+                    lat = float(lat_str)
+                    _geocode_cache[cache_key] = (lng, lat)
+                    return _geocode_cache[cache_key]
+                except (ValueError, AttributeError):
+                    pass
+    except Exception as exc:
+        print(f"⚠️ Geocode failed for {query} ({city}): {exc}")
+    _geocode_cache[cache_key] = None
+    return None
+
+
+def enrich_plan_with_coordinates(plan: Optional[dict]) -> Optional[dict]:
+    if not isinstance(plan, dict):
+        return plan
+    destination = plan.get("overview", {}).get("destination")
+    days = plan.get("days") or []
+    for day in days:
+        day_city = day.get("city") if isinstance(day, dict) else None
+        items = day.get("items") if isinstance(day, dict) else None
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("longitude") and item.get("latitude"):
+                continue
+            address = item.get("address") or item.get("name")
+            city = item.get("city") or day_city or destination
+            coords = geocode_with_amap(address, city)
+            if coords:
+                lng, lat = coords
+                item["longitude"] = lng
+                item["latitude"] = lat
+                item["coordinate_source"] = "amap_geocode"
+    return plan
+
+
+def structured_plan_to_text(plan: Optional[dict]) -> str:
+    if not isinstance(plan, dict):
+        return ""
+    lines: List[str] = []
+    overview = plan.get("overview") or {}
+    if overview:
+        lines.append("【旅行计划概览】")
+        destination = overview.get("destination")
+        if destination:
+            lines.append(f"目的地：{destination}")
+        if overview.get("days") is not None:
+            lines.append(f"天数：{overview.get('days')}")
+        if overview.get("travelers"):
+            lines.append(f"同行：{overview.get('travelers')}")
+        budget = overview.get("budget") or {}
+        if budget.get("total") is not None:
+            currency = budget.get("currency") or "CNY"
+            lines.append(f"预算：{currency} {budget.get('total')}")
+        highlights = overview.get("highlights") or []
+        if highlights:
+            lines.append("亮点：")
+            for item in highlights:
+                lines.append(f"- {item}")
+        lines.append("")
+    budget_breakdown = plan.get("budget_breakdown") or []
+    if budget_breakdown:
+        lines.append("【预算分配】")
+        for bucket in budget_breakdown:
+            category = bucket.get("category", "其他")
+            amount = bucket.get("amount")
+            description = bucket.get("description")
+            if amount is not None:
+                lines.append(f"- {category}：{amount}（{description or '详情'}）")
+            else:
+                lines.append(f"- {category}：{description or '详情待确认'}")
+        lines.append("")
+    days = plan.get("days") or []
+    if days:
+        lines.append("【每日行程】")
+        for idx, day in enumerate(days, start=1):
+            title = day.get("title") or f"第{idx}天"
+            lines.append(title)
+            summary = day.get("summary")
+            if summary:
+                lines.append(summary)
+            accommodation = day.get("accommodation") or {}
+            if accommodation.get("name"):
+                lines.append(f"住宿：{accommodation.get('name')}（预算：{accommodation.get('budget', '待定')}）")
+            meals = day.get("meals") or {}
+            meal_lines = []
+            for meal_key, label in (("breakfast", "早餐"), ("lunch", "午餐"), ("dinner", "晚餐")):
+                if meals.get(meal_key):
+                    meal_lines.append(f"{label}：{meals[meal_key]}")
+            if meal_lines:
+                lines.extend(meal_lines)
+            items = day.get("items") or []
+            for item in items:
+                time = item.get("time") or ""
+                name = item.get("name") or "活动"
+                description = item.get("description") or ""
+                budget = item.get("budget")
+                time_prefix = f"{time} " if time else ""
+                budget_suffix = f"（预算 {budget}）" if budget is not None else ""
+                lines.append(f"{time_prefix}{name}：{description}{budget_suffix}")
+            if day.get("total_budget") is not None:
+                lines.append(f"当日花费：{day.get('total_budget')}")
+            lines.append("")
+    advice = plan.get("advice") or {}
+    if advice:
+        lines.append("【实用建议】")
+        for key, label in (("preparation", "行前准备"), ("local_tips", "当地贴士"), ("money_saving", "省钱技巧"), ("safety", "安全提示")):
+            items = advice.get(key) or []
+            if items:
+                lines.append(f"{label}：")
+                for item in items:
+                    lines.append(f"- {item}")
+        lines.append("")
+    emergency = plan.get("emergency") or {}
+    if emergency:
+        lines.append("【紧急联系】")
+        if emergency.get("police"):
+            lines.append(f"报警：{emergency.get('police')}")
+        if emergency.get("medical"):
+            lines.append(f"急救：{emergency.get('medical')}")
+        if emergency.get("embassy"):
+            lines.append(f"大使馆：{emergency.get('embassy')}")
+        lines.append("")
+    itinerary_text = plan.get("itinerary_text")
+    if itinerary_text:
+        lines.append("【行程详情】")
+        lines.append(itinerary_text)
+    return "\n".join(line for line in lines if line is not None)
+
+
+def generate_travel_plan(user_input: str) -> str:
+    structured = generate_structured_travel_plan(user_input)
+    structured = enrich_plan_with_coordinates(structured)
+    if isinstance(structured, dict):
+        return structured.get("itinerary_text") or structured_plan_to_text(structured)
+    return structured or ""
+
+
+class TextPlanRequest(BaseModel):
+    user_input: str
+    user_id: Optional[str] = None
+
+
 @app.post("/asr_and_plan")
 async def asr_and_plan(
     audio: UploadFile = File(...),
@@ -490,26 +680,100 @@ async def asr_and_plan(
         if not transcript:
             raise HTTPException(status_code=500, detail="ASR returned empty result")
 
-        # 3. 调用 LLM 生成中文文本行程（模块2）
-        plan_text = generate_travel_plan(transcript)        
+        # 3. 调用 LLM 生成结构化行程并补充坐标
+        plan_structured = None
+        plan_text = ""
+        try:
+            plan_structured = generate_structured_travel_plan(transcript)
+            plan_structured = enrich_plan_with_coordinates(plan_structured)
+            plan_text = plan_structured.get("itinerary_text") or structured_plan_to_text(plan_structured)
+        except Exception as llm_err:
+            print(f"❌ LLM structured plan failed: {llm_err}")
+            plan_structured = None
+            plan_text = f"抱歉，行程生成失败：{llm_err}"
         
         # 4. （可选）存入 Supabase
         if user_id:
             try:
-                supabase.table("travel_plans").insert({
+                insert_payload = {
                     "user_id": user_id,
                     "transcript": transcript,
-                    "plan_text": plan_text  # 注意：字段名是 plan_text（字符串）
-                }).execute()
+                    "plan_text": plan_text
+                }
+                if plan_structured is not None:
+                    insert_payload["plan_structured"] = json.dumps(plan_structured, ensure_ascii=False)
+                supabase.table("travel_plans").insert({**insert_payload}).execute()
             except Exception as db_err:
                 print("⚠️ Warning: Failed to save plan to Supabase:", str(db_err))
+                if "plan_structured" in insert_payload:
+                    try:
+                        fallback_payload = insert_payload.copy()
+                        fallback_payload.pop("plan_structured", None)
+                        supabase.table("travel_plans").insert({**fallback_payload}).execute()
+                    except Exception as retry_err:
+                        print("⚠️ Warning: Fallback insert without structured data also failed:", retry_err)
 
         # 5. 返回结果
         return {
             "transcript": transcript,
-            "plan": plan_text  # 纯字符串
+            "plan": plan_text,
+            "plan_text": plan_text,
+            "plan_structured": plan_structured
         }
 
     except Exception as e:
         print("❌ ASR + Plan Error:", str(e))
         raise HTTPException(status_code=500, detail=f"ASR or LLM failed: {str(e)}")
+
+
+@app.post("/text_plan")
+def text_plan(payload: TextPlanRequest):
+    user_input = (payload.user_input or "").strip()
+    if not user_input:
+        raise HTTPException(status_code=400, detail="请输入旅行需求")
+    try:
+        plan_structured = None
+        plan_text = ""
+        try:
+            plan_structured = generate_structured_travel_plan(user_input)
+            plan_structured = enrich_plan_with_coordinates(plan_structured)
+            if isinstance(plan_structured, dict):
+                plan_text = plan_structured.get("itinerary_text") or structured_plan_to_text(plan_structured)
+            else:
+                plan_text = str(plan_structured) if plan_structured else ""
+        except Exception as llm_err:
+            print(f"❌ LLM text plan failed: {llm_err}")
+            plan_structured = None
+            plan_text = f"抱歉，行程生成失败：{llm_err}"
+
+        if payload.user_id:
+            try:
+                insert_payload = {
+                    "user_id": payload.user_id,
+                    "transcript": user_input,
+                    "plan_text": plan_text,
+                }
+                if plan_structured is not None:
+                    insert_payload["plan_structured"] = json.dumps(plan_structured, ensure_ascii=False)
+                supabase.table("travel_plans").insert({**insert_payload}).execute()
+            except Exception as db_err:
+                print("⚠️ Warning: Failed to save text plan to Supabase:", str(db_err))
+                if "plan_structured" in insert_payload:
+                    try:
+                        fallback_payload = insert_payload.copy()
+                        fallback_payload.pop("plan_structured", None)
+                        supabase.table("travel_plans").insert({**fallback_payload}).execute()
+                    except Exception as retry_err:
+                        print("⚠️ Warning: Fallback insert without structured data also failed:", retry_err)
+
+        return {
+            "transcript": user_input,
+            "plan": plan_text,
+            "plan_text": plan_text,
+            "plan_structured": plan_structured,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("❌ Text plan Error:", str(e))
+        raise HTTPException(status_code=500, detail=f"Text plan failed: {str(e)}")
