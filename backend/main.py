@@ -1,12 +1,14 @@
 # backend/main.py
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from pydantic import BaseModel, Field
 from supabase import create_client
 from dotenv import load_dotenv
 import os
-from fastapi import File, UploadFile, Form
 from xf_asr import transcribe_audio_bytes
 from llm import generate_travel_plan
+from typing import Optional, List, Dict
+from decimal import Decimal, InvalidOperation
+import re
 
 # 加载环境变量，明确从 backend/.env 读取
 from pathlib import Path
@@ -143,6 +145,31 @@ def history(user_id: str):
 class TravelRequest(BaseModel):
     user_input: str  # e.g., "我想去日本东京玩5天，预算1万元，带孩子，喜欢美食和动漫"
 
+
+class BudgetCreate(BaseModel):
+    user_id: str
+    total_budget: Decimal = Field(..., gt=0)
+    currency: str = "CNY"
+    notes: Optional[str] = None
+    plan_id: Optional[int] = None  # travel_plans.id 是 bigint
+
+
+class BudgetUpdate(BaseModel):
+    total_budget: Optional[Decimal] = Field(default=None, gt=0)
+    currency: Optional[str] = None
+    notes: Optional[str] = None
+    plan_id: Optional[int] = None
+
+
+class ExpenseCreate(BaseModel):
+    user_id: str
+    budget_id: str
+    category: str
+    amount: Decimal = Field(..., ge=0)
+    currency: str = "CNY"
+    description: Optional[str] = None
+    transcript: Optional[str] = None
+    source: str = "text"  # text | voice
 @app.post("/plan")
 def create_travel_plan(request: TravelRequest):
     try:
@@ -150,6 +177,282 @@ def create_travel_plan(request: TravelRequest):
         return {"plan": plan_text}
     except Exception as e:
         raise HTTPException(400, detail=f"LLM failed: {str(e)}")
+
+
+@app.post("/budgets")
+def create_budget(payload: BudgetCreate):
+    try:
+        data = payload.model_dump()
+        # Supabase 不接受 Decimal，转换为 float
+        data["total_budget"] = float(data["total_budget"])
+        response = supabase.table("budgets").insert(data).execute()
+        created = (response.data or [None])[0]
+        if not created:
+            raise HTTPException(status_code=500, detail="Failed to create budget")
+        return created
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Create budget failed: {str(e)}")
+
+
+@app.get("/budgets")
+def list_budgets(user_id: str):
+    try:
+        response = (
+            supabase.table("budgets")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        return {"items": response.data or []}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Fetch budgets failed: {str(e)}")
+
+
+@app.patch("/budgets/{budget_id}")
+def update_budget(budget_id: str, payload: BudgetUpdate, user_id: str):
+    try:
+        update_data = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
+        if not update_data:
+            return {"id": budget_id, "message": "No changes applied"}
+        if "total_budget" in update_data:
+            update_data["total_budget"] = float(update_data["total_budget"])
+        response = (
+            supabase.table("budgets")
+            .update(update_data)
+            .eq("id", budget_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        updated = (response.data or [None])[0]
+        if not updated:
+            raise HTTPException(status_code=404, detail="Budget not found")
+        return updated
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Update budget failed: {str(e)}")
+
+
+@app.delete("/budgets/{budget_id}")
+def delete_budget(budget_id: str, user_id: str):
+    try:
+        response = (
+            supabase.table("budgets")
+            .delete()
+            .eq("id", budget_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Budget not found")
+        return {"message": "Budget deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete budget failed: {str(e)}")
+
+
+@app.post("/expenses")
+def create_expense(payload: ExpenseCreate):
+    try:
+        budget_id = payload.budget_id
+        user_id = payload.user_id
+        _ensure_budget_owner(budget_id, user_id)
+        data = payload.model_dump()
+        data["amount"] = float(data["amount"])
+        response = supabase.table("expenses").insert(data).execute()
+        created = (response.data or [None])[0]
+        if not created:
+            raise HTTPException(status_code=500, detail="Failed to create expense")
+        return created
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Create expense failed: {str(e)}")
+
+
+@app.get("/expenses")
+def list_expenses(user_id: str, budget_id: str):
+    try:
+        budget = _ensure_budget_owner(budget_id, user_id)
+        response = (
+            supabase.table("expenses")
+            .select("*")
+            .eq("budget_id", budget_id)
+            .eq("user_id", user_id)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        items = response.data or []
+        total_spent = sum(_decimal_to_float(item.get("amount")) or 0 for item in items)
+        category_totals: Dict[str, float] = {}
+        for item in items:
+            category = item.get("category") or "other"
+            amount = _decimal_to_float(item.get("amount")) or 0
+            category_totals[category] = category_totals.get(category, 0) + amount
+        remaining = None
+        budget_amount = _decimal_to_float(budget.get("total_budget"))
+        if budget_amount is not None:
+            remaining = budget_amount - total_spent
+        return {
+            "budget": budget,
+            "items": items,
+            "total_spent": total_spent,
+            "remaining": remaining,
+            "currency": budget.get("currency", "CNY"),
+            "by_category": category_totals,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Fetch expenses failed: {str(e)}")
+
+
+@app.post("/expenses/voice")
+async def create_expense_from_voice(
+    budget_id: str = Form(...),
+    user_id: str = Form(...),
+    audio: UploadFile = File(...),
+    currency_hint: Optional[str] = Form(default=None),
+    fallback_category: Optional[str] = Form(default=None),
+):
+    try:
+        _ensure_budget_owner(budget_id, user_id)
+        audio_bytes = await audio.read()
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="Empty audio file")
+        transcript = transcribe_audio_bytes(audio_bytes)
+        if not transcript:
+            raise HTTPException(status_code=500, detail="ASR returned empty result")
+        parsed = _parse_expense_from_text(transcript)
+        amount = parsed.get("amount")
+        if amount is None:
+            raise HTTPException(status_code=400, detail="无法从语音中识别金额，请手动输入")
+        currency = currency_hint or parsed.get("currency") or "CNY"
+        category = fallback_category or parsed.get("category") or "other"
+        data = {
+            "budget_id": budget_id,
+            "user_id": user_id,
+            "category": category,
+            "amount": float(amount),
+            "currency": currency,
+            "description": transcript,
+            "transcript": transcript,
+            "source": "voice",
+        }
+        response = supabase.table("expenses").insert(data).execute()
+        created = (response.data or [None])[0]
+        if not created:
+            raise HTTPException(status_code=500, detail="Failed to create expense")
+        created["transcript"] = transcript
+        return created
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Create voice expense failed: {str(e)}")
+
+
+def _decimal_to_float(value):
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ensure_budget_owner(budget_id: str, user_id: str):
+    budget_res = (
+        supabase.table("budgets")
+        .select("*")
+        .eq("id", budget_id)
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    rows = budget_res.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Budget not found")
+    return rows[0]
+
+
+def _parse_amount(text: str) -> Optional[Decimal]:
+    if not text:
+        return None
+    pattern = r"(\d+(?:\.\d+)?)"
+    match = re.search(pattern, text.replace(",", ""))
+    if not match:
+        return None
+    try:
+        return Decimal(match.group(1))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _detect_currency(text: str) -> Optional[str]:
+    if not text:
+        return None
+    currency_map = {
+        "美元": "USD",
+        "美金": "USD",
+        "usd": "USD",
+        "日元": "JPY",
+        "日幣": "JPY",
+        "日币": "JPY",
+        "日圓": "JPY",
+        "韩元": "KRW",
+        "韓元": "KRW",
+        "欧元": "EUR",
+        "歐元": "EUR",
+        "英镑": "GBP",
+        "英鎊": "GBP",
+        "港币": "HKD",
+        "港幣": "HKD",
+        "人民币": "CNY",
+        "人民幣": "CNY",
+        "rmb": "CNY",
+        "元": "CNY",
+        "块": "CNY",
+        "块钱": "CNY",
+    }
+    lowered = text.lower()
+    for keyword, code in currency_map.items():
+        if keyword in text or keyword in lowered:
+            return code
+    return None
+
+
+def _detect_category(text: str) -> str:
+    if not text:
+        return "other"
+    category_keywords = [
+        ("food", ["餐", "吃", "饭", "早餐", "午餐", "晚餐", "小吃", "美食", "咖啡", "餐厅", "酒吧"]),
+        ("transport", ["地铁", "飞机", "火车", "打车", "出租", "公交", "高铁", "车票", "交通", "公交卡", "机票"]),
+        ("hotel", ["酒店", "住宿", "民宿", "旅馆", "客栈", "入住"]),
+        ("shopping", ["购物", "买", "购买", "纪念品", "特产", "伴手礼", "礼物"]),
+        ("entertainment", ["门票", "景点", "游玩", "娱乐", "乐园", "演出", "展览", "体验"]),
+        ("other", []),
+    ]
+    for category, keywords in category_keywords:
+        if any(keyword in text for keyword in keywords):
+            return category
+    return "other"
+
+
+def _parse_expense_from_text(text: str) -> Dict[str, Optional[str]]:
+    amount = _parse_amount(text)
+    currency = _detect_currency(text)
+    category = _detect_category(text)
+    return {
+        "amount": amount,
+        "currency": currency,
+        "category": category,
+    }
 
 
 @app.post("/asr_and_plan")

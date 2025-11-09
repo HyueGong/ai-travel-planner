@@ -1,6 +1,8 @@
 // frontend/src/App.jsx
 import { useState, useRef, useEffect } from 'react';
 import Login from './Login.jsx';
+import BudgetPanel from './BudgetPanel.jsx';
+import { createWavBlobFromFloat32, resampleTo16kHQ, normalizeAudio, trimSilence } from './audioUtils.js';
 
 function App() {
   const [isRecording, setIsRecording] = useState(false);
@@ -10,107 +12,10 @@ function App() {
   const [selectedPlan, setSelectedPlan] = useState(null); // 当前选中的行程
   const [isGeneratingPlan, setIsGeneratingPlan] = useState(false); // 是否正在生成行程
   const [currentPlan, setCurrentPlan] = useState(null); // 当前生成的行程（还未保存）
+  const [activePanel, setActivePanel] = useState('plan'); // 'plan' | 'budget'
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
-
-  // ========== WAV 编码工具函数 ==========
-  function createWavBlobFromFloat32(float32Data, sampleRate) {
-    const numChannels = 1;
-    const format = 1; // PCM
-    const bitDepth = 16;
-
-    const output = float32Data;
-    const buffer = new ArrayBuffer(44 + output.length * 2);
-    const view = new DataView(buffer);
-
-    // WAV 头
-    const writeString = (offset, str) => {
-      for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
-    };
-    writeString(0, 'RIFF');
-    view.setUint32(4, 36 + output.length * 2, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, format, true);
-    view.setUint16(22, numChannels, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * numChannels * (bitDepth / 8), true);
-    view.setUint16(32, numChannels * (bitDepth / 8), true);
-    view.setUint16(34, bitDepth, true);
-    writeString(36, 'data');
-    view.setUint32(40, output.length * 2, true);
-
-    // PCM 数据
-    const offset = 44;
-    for (let i = 0; i < output.length; i++) {
-      const s = Math.max(-1, Math.min(1, output[i]));
-      view.setInt16(offset + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    }
-
-    return new Blob([view], { type: 'audio/wav' });
-  }
-
-  // 使用 OfflineAudioContext 做高质量重采样到 16kHz（线性插值由浏览器实现）
-  async function resampleTo16kHQ(float32Data, sourceSampleRate) {
-    const targetRate = 16000;
-    if (sourceSampleRate === targetRate) return float32Data;
-    const lengthInSeconds = float32Data.length / sourceSampleRate;
-    const offlineCtx = new OfflineAudioContext(1, Math.ceil(lengthInSeconds * targetRate), targetRate);
-    const buffer = offlineCtx.createBuffer(1, float32Data.length, sourceSampleRate);
-    buffer.copyToChannel(float32Data, 0);
-    const source = offlineCtx.createBufferSource();
-    source.buffer = buffer;
-    source.connect(offlineCtx.destination);
-    source.start(0);
-    const rendered = await offlineCtx.startRendering();
-    return rendered.getChannelData(0).slice();
-  }
-
-  // 简单归一化到 -3dBFS 左右
-  function normalizeAudio(float32Data) {
-    let max = 0;
-    for (let i = 0; i < float32Data.length; i++) {
-      const v = Math.abs(float32Data[i]);
-      if (v > max) max = v;
-    }
-    if (max < 1e-6) return float32Data;
-    const targetPeak = 0.7071; // -3dBFS ≈ 0.7071
-    const gain = targetPeak / max;
-    const out = new Float32Array(float32Data.length);
-    for (let i = 0; i < float32Data.length; i++) out[i] = float32Data[i] * gain;
-    return out;
-  }
-
-  // 裁剪前后静音（简单阈值/最小持续样本）
-  function trimSilence(float32Data, sampleRate, threshold = 0.01, minSilenceMs = 150) {
-    const minSilenceSamples = Math.floor((minSilenceMs / 1000) * sampleRate);
-    let start = 0;
-    let end = float32Data.length - 1;
-    // 前
-    let count = 0;
-    for (let i = 0; i < float32Data.length; i++) {
-      if (Math.abs(float32Data[i]) < threshold) {
-        count++;
-      } else {
-        if (count >= minSilenceSamples) start = i;
-        break;
-      }
-    }
-    // 后
-    count = 0;
-    for (let i = float32Data.length - 1; i >= 0; i--) {
-      if (Math.abs(float32Data[i]) < threshold) {
-        count++;
-      } else {
-        if (count >= minSilenceSamples) end = i;
-        break;
-      }
-    }
-    if (end <= start) return float32Data;
-    return float32Data.slice(start, end + 1);
-  }
 
   // ========== 录音逻辑 ==========
   const startRecording = async () => {
@@ -266,7 +171,7 @@ function App() {
             <div style={{ marginTop: 10, display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12 }}>
               <span style={{ color: '#334155', fontSize: 14 }}>{user.email}</span>
               <button
-                onClick={() => { localStorage.removeItem('user'); setUser(null); setHistory([]); }}
+                onClick={() => { localStorage.removeItem('user'); setUser(null); setHistory([]); setActivePanel('plan'); }}
                 style={{
                   padding: '6px 12px',
                   background: '#e5e7eb',
@@ -393,20 +298,55 @@ function App() {
               )}
             </div>
 
-            {/* 识别区域/行程显示区域 */}
+            {/* 识别区域 / 预算管理区域 */}
             <div style={{ background: '#ffffff', borderRadius: 16, boxShadow: '0 8px 24px rgba(0,0,0,0.08)', padding: 24, minHeight: 500, display: 'flex', flexDirection: 'column' }}>
-              {/* 优先显示当前生成的行程，其次是历史记录中选中的行程 */}
-              {(currentPlan || selectedPlan) ? (
-                <>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-                    <div>
-                      <h3 style={{ margin: 0, color: '#0f172a', fontSize: 24, fontWeight: 600 }}>
-                        ✈️ 旅行行程
-                      </h3>
-                      <div style={{ marginTop: 4, fontSize: 13, color: '#64748b' }}>
-                        {currentPlan ? '刚刚生成的行程' : '历史行程'}
-                      </div>
-                    </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+                <div>
+                  <h3 style={{ margin: 0, color: '#0f172a', fontSize: 24, fontWeight: 600 }}>
+                    {activePanel === 'plan' ? '✈️ 旅行行程' : '💰 预算管理'}
+                  </h3>
+                  <div style={{ marginTop: 4, fontSize: 13, color: '#64748b' }}>
+                    {activePanel === 'plan'
+                      ? (currentPlan ? '刚刚生成的行程' : selectedPlan ? '历史行程' : '语音识别与行程生成')
+                      : '实时查看预算、记录开销'}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: 4, background: '#f1f5f9', padding: 4, borderRadius: 8 }}>
+                    <button
+                      onClick={() => setActivePanel('plan')}
+                      style={{
+                        padding: '6px 12px',
+                        background: activePanel === 'plan' ? '#3b82f6' : 'transparent',
+                        color: activePanel === 'plan' ? '#fff' : '#64748b',
+                        border: 'none',
+                        borderRadius: 6,
+                        cursor: 'pointer',
+                        fontSize: 12,
+                        fontWeight: 500,
+                        transition: 'all 0.2s'
+                      }}
+                    >
+                      行程
+                    </button>
+                    <button
+                      onClick={() => setActivePanel('budget')}
+                      style={{
+                        padding: '6px 12px',
+                        background: activePanel === 'budget' ? '#3b82f6' : 'transparent',
+                        color: activePanel === 'budget' ? '#fff' : '#64748b',
+                        border: 'none',
+                        borderRadius: 6,
+                        cursor: 'pointer',
+                        fontSize: 12,
+                        fontWeight: 500,
+                        transition: 'all 0.2s'
+                      }}
+                    >
+                      预算
+                    </button>
+                  </div>
+                  {activePanel === 'plan' && (currentPlan || selectedPlan) && (
                     <button 
                       onClick={() => { setCurrentPlan(null); setSelectedPlan(null); }}
                       style={{
@@ -432,158 +372,162 @@ function App() {
                     >
                       返回识别
                     </button>
-                  </div>
-                  
-                  {/* 语音输入内容卡片 */}
-                  <div style={{ 
-                    marginBottom: 16, 
-                    padding: 16, 
-                    background: 'linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%)',
-                    borderRadius: 12,
-                    border: '1px solid #e2e8f0'
-                  }}>
-                    <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
-                      🎤 语音输入
-                    </div>
-                    <div style={{ color: '#0f172a', fontWeight: 500, fontSize: 15, lineHeight: 1.6 }}>
-                      {currentPlan ? transcript : (selectedPlan?.text || '')}
-                    </div>
-                  </div>
-                  
-                  {/* 行程内容卡片 */}
-                  <div style={{ 
-                    flex: 1,
-                    padding: 20, 
-                    border: '2px solid #e2e8f0', 
-                    borderRadius: 12, 
-                    background: 'linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)',
-                    maxHeight: 'calc(70vh - 200px)',
-                    overflowY: 'auto',
-                    overflowX: 'hidden',
-                    boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.04)'
-                  }}>
-                    <div style={{
-                      whiteSpace: 'pre-wrap',
-                      lineHeight: 1.8,
-                      color: '#1e293b',
-                      fontSize: 14,
-                      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+                  )}
+                </div>
+              </div>
+
+              {activePanel === 'plan' ? (
+                (currentPlan || selectedPlan) ? (
+                  <>
+                    <div style={{ 
+                      marginBottom: 16, 
+                      padding: 16, 
+                      background: 'linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%)',
+                      borderRadius: 12,
+                      border: '1px solid #e2e8f0'
                     }}>
-                      {currentPlan || selectedPlan?.plan || '暂无行程内容'}
-                    </div>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <h3 style={{ marginTop: 0, marginBottom: 24, color: '#0f172a', fontSize: 24, fontWeight: 600 }}>
-                    🎙️ 语音识别
-                  </h3>
-                  
-                  {/* 录音按钮区域 */}
-                  <div style={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    gap: 16, 
-                    marginBottom: 24,
-                    padding: 20,
-                    background: 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)',
-                    borderRadius: 12,
-                    border: '2px dashed #cbd5e1'
-                  }}>
-                    <button 
-                      onClick={isRecording ? stopRecording : startRecording} 
-                      style={{ 
-                        padding: '14px 28px', 
-                        background: isRecording 
-                          ? 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)' 
-                          : 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)',
-                        color: '#fff', 
-                        border: 'none', 
-                        borderRadius: 12, 
-                        boxShadow: isRecording 
-                          ? '0 4px 12px rgba(239, 68, 68, 0.4)' 
-                          : '0 4px 12px rgba(34, 197, 94, 0.4)',
-                        fontSize: 16,
-                        fontWeight: 600,
-                        cursor: 'pointer',
-                        transition: 'transform 0.2s, box-shadow 0.2s',
-                        minWidth: 140
-                      }}
-                      onMouseOver={(e) => { 
-                        if (!isRecording) {
-                          e.currentTarget.style.transform = 'translateY(-2px)';
-                          e.currentTarget.style.boxShadow = '0 6px 16px rgba(34, 197, 94, 0.5)';
-                        }
-                      }}
-                      onMouseOut={(e) => { 
-                        e.currentTarget.style.transform = 'translateY(0)';
-                        e.currentTarget.style.boxShadow = isRecording 
-                          ? '0 4px 12px rgba(239, 68, 68, 0.4)' 
-                          : '0 4px 12px rgba(34, 197, 94, 0.4)';
-                      }}
-                    >
-                      {isRecording ? '⏹️ 停止录音' : '🎙️ 开始录音'}
-                    </button>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ color: '#0f172a', fontSize: 15, fontWeight: 500, marginBottom: 4 }}>
-                        {isRecording ? '🔴 正在录音...' : isGeneratingPlan ? '⏳ 正在处理...' : '👆 点击开始录音'}
+                      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                        语音输入
                       </div>
-                      {isRecording && (
-                        <div style={{ color: '#64748b', fontSize: 13, marginTop: 4 }}>
-                          录音中，请说话...
-                        </div>
-                      )}
+                      <div style={{ color: '#0f172a', fontWeight: 500, fontSize: 15, lineHeight: 1.6 }}>
+                        {currentPlan ? transcript : (selectedPlan?.text || '')}
+                      </div>
                     </div>
-                  </div>
-                  
-                  {/* 识别结果卡片 */}
-                  <div style={{ 
-                    marginTop: 'auto',
-                    padding: 20, 
-                    border: '2px solid #e2e8f0', 
-                    borderRadius: 12, 
-                    minHeight: 150, 
-                    background: 'linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)',
-                    boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
-                  }}>
+                    
                     <div style={{ 
-                      fontSize: 13, 
-                      color: '#64748b', 
-                      marginBottom: 12, 
-                      fontWeight: 600,
-                      textTransform: 'uppercase',
-                      letterSpacing: 0.5
+                      flex: 1,
+                      padding: 20, 
+                      border: '2px solid #e2e8f0', 
+                      borderRadius: 12, 
+                      background: 'linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)',
+                      maxHeight: 'calc(70vh - 200px)',
+                      overflowY: 'auto',
+                      overflowX: 'hidden',
+                      boxShadow: 'inset 0 2px 4px rgba(0,0,0,0.04)'
                     }}>
-                      📝 识别结果
+                      <div style={{
+                        whiteSpace: 'pre-wrap',
+                        lineHeight: 1.8,
+                        color: '#1e293b',
+                        fontSize: 14,
+                        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'
+                      }}>
+                        {currentPlan || selectedPlan?.plan || '暂无行程内容'}
+                      </div>
                     </div>
+                  </>
+                ) : (
+                  <>
+                    <h3 style={{ marginTop: 0, marginBottom: 24, color: '#0f172a', fontSize: 24, fontWeight: 600 }}>
+                      🎙️ 语音识别
+                    </h3>
+                    
                     <div style={{ 
-                      color: '#0f172a', 
-                      fontSize: 15,
-                      lineHeight: 1.8,
-                      minHeight: 60,
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word'
+                      display: 'flex', 
+                      alignItems: 'center', 
+                      gap: 16, 
+                      marginBottom: 24,
+                      padding: 20,
+                      background: 'linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%)',
+                      borderRadius: 12,
+                      border: '2px dashed #cbd5e1'
                     }}>
-                      {isGeneratingPlan ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, color: '#3b82f6' }}>
-                          <div style={{
-                            width: 20,
-                            height: 20,
-                            border: '3px solid #dbeafe',
-                            borderTop: '3px solid #3b82f6',
-                            borderRadius: '50%',
-                            animation: 'spin 1s linear infinite'
-                          }}></div>
-                          <span>正在识别并生成行程，请稍候...</span>
+                      <button 
+                        onClick={isRecording ? stopRecording : startRecording} 
+                        style={{ 
+                          padding: '14px 28px', 
+                          background: isRecording 
+                            ? 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)' 
+                            : 'linear-gradient(135deg, #22c55e 0%, #16a34a 100%)',
+                          color: '#fff', 
+                          border: 'none', 
+                          borderRadius: 12, 
+                          boxShadow: isRecording 
+                            ? '0 4px 12px rgba(239, 68, 68, 0.4)' 
+                            : '0 4px 12px rgba(34, 197, 94, 0.4)',
+                          fontSize: 16,
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                          transition: 'transform 0.2s, box-shadow 0.2s',
+                          minWidth: 140
+                        }}
+                        onMouseOver={(e) => { 
+                          if (!isRecording) {
+                            e.currentTarget.style.transform = 'translateY(-2px)';
+                            e.currentTarget.style.boxShadow = '0 6px 16px rgba(34, 197, 94, 0.5)';
+                          }
+                        }}
+                        onMouseOut={(e) => { 
+                          e.currentTarget.style.transform = 'translateY(0)';
+                          e.currentTarget.style.boxShadow = isRecording 
+                            ? '0 4px 12px rgba(239, 68, 68, 0.4)' 
+                            : '0 4px 12px rgba(34, 197, 94, 0.4)';
+                        }}
+                      >
+                        {isRecording ? '⏹️ 停止录音' : '🎙️ 开始录音'}
+                      </button>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ color: '#0f172a', fontSize: 15, fontWeight: 500, marginBottom: 4 }}>
+                          {isRecording ? '🔴 正在录音...' : isGeneratingPlan ? '⏳ 正在处理...' : '👆 点击开始录音'}
                         </div>
-                      ) : transcript ? (
-                        transcript
-                      ) : (
-                        <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>暂无识别结果，请开始录音</span>
-                      )}
+                        {isRecording && (
+                          <div style={{ color: '#64748b', fontSize: 13, marginTop: 4 }}>
+                            录音中，请说话...
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </>
+                    
+                    <div style={{ 
+                      marginTop: 'auto',
+                      padding: 20, 
+                      border: '2px solid #e2e8f0', 
+                      borderRadius: 12, 
+                      minHeight: 150, 
+                      background: 'linear-gradient(135deg, #ffffff 0%, #f8fafc 100%)',
+                      boxShadow: '0 2px 8px rgba(0,0,0,0.04)'
+                    }}>
+                      <div style={{ 
+                        fontSize: 13, 
+                        color: '#64748b', 
+                        marginBottom: 12, 
+                        fontWeight: 600,
+                        textTransform: 'uppercase',
+                        letterSpacing: 0.5
+                      }}>
+                        📝 识别结果
+                      </div>
+                      <div style={{ 
+                        color: '#0f172a', 
+                        fontSize: 15,
+                        lineHeight: 1.8,
+                        minHeight: 60,
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word'
+                      }}>
+                        {isGeneratingPlan ? (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 12, color: '#3b82f6' }}>
+                            <div style={{
+                              width: 20,
+                              height: 20,
+                              border: '3px solid #dbeafe',
+                              borderTop: '3px solid #3b82f6',
+                              borderRadius: '50%',
+                              animation: 'spin 1s linear infinite'
+                            }}></div>
+                            <span>正在识别并生成行程，请稍候...</span>
+                          </div>
+                        ) : transcript ? (
+                          transcript
+                        ) : (
+                          <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>暂无识别结果，请开始录音</span>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )
+              ) : (
+                <BudgetPanel user={user} history={history} />
               )}
             </div>
           </div>
