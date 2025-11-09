@@ -355,6 +355,25 @@ async def create_expense_from_voice(
         raise HTTPException(status_code=500, detail=f"Create voice expense failed: {str(e)}")
 
 
+@app.delete("/travel_plans/{plan_id}")
+def delete_travel_plan(plan_id: int, user_id: str):
+    try:
+        response = (
+            supabase.table("travel_plans")
+            .delete()
+            .eq("id", plan_id)
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if not response.data:
+            raise HTTPException(status_code=404, detail="Travel plan not found")
+        return {"message": "Travel plan deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Delete travel plan failed: {str(e)}")
+
+
 def _decimal_to_float(value):
     if value is None:
         return None

@@ -81,6 +81,7 @@ npm run dev
 - `POST /plan` — 仅生成旅行计划（传入文本）
 - `POST /asr_and_plan` — 语音识别 + 生成旅行计划（主要接口）
 - `GET /history?user_id=xxx` — 获取用户历史记录
+- `DELETE /travel_plans/{id}?user_id=xxx` — 删除指定行程（及其在历史列表中的展示）
 
 ### 预算管理
 

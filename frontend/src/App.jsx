@@ -13,6 +13,7 @@ function App() {
   const [isGeneratingPlan, setIsGeneratingPlan] = useState(false); // 是否正在生成行程
   const [currentPlan, setCurrentPlan] = useState(null); // 当前生成的行程（还未保存）
   const [activePanel, setActivePanel] = useState('plan'); // 'plan' | 'budget'
+  const [isDeletingPlanId, setIsDeletingPlanId] = useState(null);
 
   const mediaRecorderRef = useRef(null);
   const audioChunksRef = useRef([]);
@@ -134,6 +135,30 @@ function App() {
     }
   };
 
+  const deletePlan = async (planId) => {
+    if (!user?.id) return;
+    const confirmDelete = window.confirm('确认删除该行程吗？删除后不可恢复。');
+    if (!confirmDelete) return;
+    setIsDeletingPlanId(planId);
+    try {
+      const res = await fetch(`http://localhost:8000/travel_plans/${encodeURIComponent(planId)}?user_id=${encodeURIComponent(user.id)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const msg = await res.text();
+        throw new Error(msg || '删除行程失败');
+      }
+      if (selectedPlan?.id === planId) {
+        setSelectedPlan(null);
+      }
+      await fetchHistory(user.id);
+    } catch (e) {
+      window.alert(e.message || '删除行程失败');
+    } finally {
+      setIsDeletingPlanId(null);
+    }
+  };
+
   useEffect(() => {
     const saved = localStorage.getItem('user');
     if (saved) {
@@ -242,56 +267,89 @@ function App() {
                           e.currentTarget.style.transform = 'translateY(0)';
                         }
                       }}>
-                      <div style={{ 
-                        fontWeight: selectedPlan?.id === item.id ? 600 : 500,
-                        color: '#0f172a',
-                        fontSize: 14,
-                        lineHeight: 1.6,
-                        marginBottom: 8,
-                        display: '-webkit-box',
-                        WebkitLineClamp: 2,
-                        WebkitBoxOrient: 'vertical',
-                        overflow: 'hidden'
-                      }}>
-                        {item.text || '无文本'}
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ 
+                            fontWeight: selectedPlan?.id === item.id ? 600 : 500,
+                            color: '#0f172a',
+                            fontSize: 14,
+                            lineHeight: 1.6,
+                            marginBottom: 8,
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden'
+                          }}>
+                            {item.text || '无文本'}
+                          </div>
+                          {item.created_at && (
+                            <div style={{ 
+                              marginTop: 8, 
+                              color: '#94a3b8', 
+                              fontSize: 11,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 4
+                            }}>
+                              <span>🕒</span>
+                              <span>{new Date(item.created_at).toLocaleString('zh-CN', { 
+                                year: 'numeric',
+                                month: '2-digit',
+                                day: '2-digit',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}</span>
+                            </div>
+                          )}
+                          {item.plan && (
+                            <div style={{ 
+                              marginTop: 10, 
+                              padding: '6px 12px',
+                              background: selectedPlan?.id === item.id 
+                                ? 'rgba(59, 130, 246, 0.2)' 
+                                : 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)',
+                              borderRadius: 6,
+                              fontSize: 11, 
+                              color: '#1e40af',
+                              fontWeight: 600,
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: 4
+                            }}>
+                              {selectedPlan?.id === item.id ? '✓ 已展开' : '👆 点击查看行程'}
+                            </div>
+                          )}
+                        </div>
+                        {item.plan && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); deletePlan(item.id); }}
+                            disabled={isDeletingPlanId === item.id}
+                            style={{
+                              padding: '6px 10px',
+                              borderRadius: 6,
+                              border: '1px solid #fca5a5',
+                              background: isDeletingPlanId === item.id ? '#fecaca' : '#fee2e2',
+                              color: '#b91c1c',
+                              fontSize: 12,
+                              fontWeight: 600,
+                              cursor: isDeletingPlanId === item.id ? 'not-allowed' : 'pointer',
+                              minWidth: 70,
+                              transition: 'background 0.2s, transform 0.2s'
+                            }}
+                            onMouseOver={(e) => {
+                              if (isDeletingPlanId === item.id) return;
+                              e.currentTarget.style.background = '#fca5a5';
+                              e.currentTarget.style.transform = 'translateY(-1px)';
+                            }}
+                            onMouseOut={(e) => {
+                              e.currentTarget.style.background = isDeletingPlanId === item.id ? '#fecaca' : '#fee2e2';
+                              e.currentTarget.style.transform = 'translateY(0)';
+                            }}
+                          >
+                            {isDeletingPlanId === item.id ? '删除中…' : '删除'}
+                          </button>
+                        )}
                       </div>
-                      {item.created_at && (
-                        <div style={{ 
-                          marginTop: 8, 
-                          color: '#94a3b8', 
-                          fontSize: 11,
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 4
-                        }}>
-                          <span>🕒</span>
-                          <span>{new Date(item.created_at).toLocaleString('zh-CN', { 
-                            year: 'numeric',
-                            month: '2-digit',
-                            day: '2-digit',
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })}</span>
-                        </div>
-                      )}
-                      {item.plan && (
-                        <div style={{ 
-                          marginTop: 10, 
-                          padding: '6px 12px',
-                          background: selectedPlan?.id === item.id 
-                            ? 'rgba(59, 130, 246, 0.2)' 
-                            : 'linear-gradient(135deg, #dbeafe 0%, #bfdbfe 100%)',
-                          borderRadius: 6,
-                          fontSize: 11, 
-                          color: '#1e40af',
-                          fontWeight: 600,
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 4
-                        }}>
-                          {selectedPlan?.id === item.id ? '✓ 已展开' : '👆 点击查看行程'}
-                        </div>
-                      )}
                     </li>
                   ))}
                 </ul>

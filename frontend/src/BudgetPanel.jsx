@@ -35,6 +35,7 @@ function BudgetPanel({ user, history = [] }) {
   const [isRecordingExpense, setIsRecordingExpense] = useState(false);
   const [expenseStatus, setExpenseStatus] = useState('');
   const [expenseError, setExpenseError] = useState('');
+  const [deletingBudgetId, setDeletingBudgetId] = useState(null);
 
   const expenseRecorderRef = useRef(null);
   const expenseAudioBuffersRef = useRef([]);
@@ -206,6 +207,35 @@ function BudgetPanel({ user, history = [] }) {
       setExpenseError(e.message || '添加开销失败');
     } finally {
       setIsAddingExpense(false);
+    }
+  };
+
+  const handleDeleteBudget = async (budgetId) => {
+    if (!user?.id) return;
+    const confirmDelete = window.confirm('确认删除该预算吗？关联的开销记录也会被删除。');
+    if (!confirmDelete) return;
+    setDeletingBudgetId(budgetId);
+    setExpenseStatus('');
+    setExpenseError('');
+    setError('');
+    try {
+      const res = await fetch(`http://localhost:8000/budgets/${encodeURIComponent(budgetId)}?user_id=${encodeURIComponent(user.id)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const msg = await res.text();
+        throw new Error(msg || '删除预算失败');
+      }
+      if (selectedBudgetId === budgetId) {
+        setSelectedBudgetId(null);
+        setBudgetSummary(null);
+      }
+      await fetchBudgets(user.id);
+      setExpenseStatus('预算已删除');
+    } catch (e) {
+      setError(e.message || '删除预算失败');
+    } finally {
+      setDeletingBudgetId(null);
     }
   };
 
@@ -405,11 +435,19 @@ function BudgetPanel({ user, history = [] }) {
           ) : (
             budgets.map((budget) => {
               const isActive = budget.id === selectedBudgetId;
+              const isDeleting = deletingBudgetId === budget.id;
               return (
-                <button
+                <div
                   key={budget.id}
-                  type="button"
                   onClick={() => setSelectedBudgetId(budget.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setSelectedBudgetId(budget.id);
+                    }
+                  }}
                   style={{
                     textAlign: 'left',
                     padding: 16,
@@ -419,25 +457,62 @@ function BudgetPanel({ user, history = [] }) {
                     boxShadow: isActive ? '0 4px 12px rgba(59,130,246,0.15)' : '0 2px 4px rgba(15,23,42,0.04)',
                     cursor: 'pointer',
                     transition: 'all 0.2s',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'flex-start',
+                    gap: 12,
                   }}
                 >
-                  <div style={{ color: '#0f172a', fontWeight: 600, marginBottom: 6 }}>
-                    预算：{budget.currency || 'CNY'} {Number(budget.total_budget || 0).toLocaleString()}
-                  </div>
-                  {budget.notes && (
-                    <div style={{ color: '#475569', fontSize: 13, lineHeight: 1.5, marginBottom: 6 }}>
-                      {budget.notes}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ color: '#0f172a', fontWeight: 600, marginBottom: 6 }}>
+                      预算：{budget.currency || 'CNY'} {Number(budget.total_budget || 0).toLocaleString()}
                     </div>
-                  )}
-                  <div style={{ color: '#94a3b8', fontSize: 12, display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    创建时间：{budget.created_at ? new Date(budget.created_at).toLocaleString() : '未知'}
-                    {budget.plan_id && (
-                      <span>
-                        关联行程：{renderPlanSummary(normalizedHistory, budget.plan_id)}
-                      </span>
+                    {budget.notes && (
+                      <div style={{ color: '#475569', fontSize: 13, lineHeight: 1.5, marginBottom: 6 }}>
+                        {budget.notes}
+                      </div>
                     )}
+                    <div style={{ color: '#94a3b8', fontSize: 12, display: 'flex', flexDirection: 'column', gap: 2 }}>
+                      创建时间：{budget.created_at ? new Date(budget.created_at).toLocaleString() : '未知'}
+                      {budget.plan_id && (
+                        <span>
+                          关联行程：{renderPlanSummary(normalizedHistory, budget.plan_id)}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteBudget(budget.id);
+                    }}
+                    disabled={isDeleting}
+                    style={{
+                      padding: '6px 10px',
+                      borderRadius: 6,
+                      border: '1px solid #fca5a5',
+                      background: isDeleting ? '#fecaca' : '#fee2e2',
+                      color: '#b91c1c',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: isDeleting ? 'not-allowed' : 'pointer',
+                      minWidth: 70,
+                      transition: 'background 0.2s, transform 0.2s'
+                    }}
+                    onMouseOver={(e) => {
+                      if (isDeleting) return;
+                      e.currentTarget.style.background = '#fca5a5';
+                      e.currentTarget.style.transform = 'translateY(-1px)';
+                    }}
+                    onMouseOut={(e) => {
+                      e.currentTarget.style.background = isDeleting ? '#fecaca' : '#fee2e2';
+                      e.currentTarget.style.transform = 'translateY(0)';
+                    }}
+                  >
+                    {isDeleting ? '删除中…' : '删除'}
+                  </button>
+                </div>
               );
             })
           )}
