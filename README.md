@@ -25,28 +25,34 @@
 
 ```
 ai-travel-planner/
-├── backend/                      # FastAPI 服务
-│   ├── __init__.py
-│   ├── main.py                   # API 入口：行程生成、历史、预算、记账
-│   ├── llm.py                    # DeepSeek LLM 客户端与 JSON 解析修正
-│   ├── xf_asr.py                 # 讯飞实时语音识别封装
-│   └── requirements.txt          # 后端依赖
-├── frontend/                     # React + Vite 单页应用
-│   ├── index.html
-│   ├── vite.config.js
+├── backend/                       # FastAPI 服务
+│   ├── main.py                    # API 入口：行程生成、历史、预算、记账
+│   ├── llm.py                     # DeepSeek LLM 客户端与 JSON 解析修正
+│   ├── xf_asr.py                  # 讯飞实时语音识别封装
+│   ├── requirements.txt           # 后端依赖
+│   └── env.example                # 后端环境变量示例
+├── frontend/                      # React + Vite 前端
 │   ├── package.json
-│   ├── src/
-│   │   ├── main.jsx              # React 入口，挂载 App
-│   │   ├── App.jsx               # 主界面（行程 / 预算双面板）
-│   │   ├── App.css
-│   │   ├── index.css
-│   │   ├── MapView.jsx           # 高德地图展示行程线路
-│   │   ├── mapLoader.js          # 高德地图 SDK 加载与缓存逻辑
-│   │   ├── BudgetPanel.jsx       # 预算管理与记账界面
-│   │   ├── Login.jsx             # Supabase 认证入口
-│   │   ├── audioUtils.js         # 浏览器录音 & 音频处理
-│   │   └── assets/
-│   │       └── react.svg
+│   ├── vite.config.js
+│   ├── env.example                # 前端环境变量示例（高德 Key）
+│   ├── public/
+│   │   └── vite.svg
+│   └── src/
+│       ├── main.jsx               # React 入口，挂载 App
+│       ├── App.jsx                # 主界面（行程 / 预算双面板）
+│       ├── App.css
+│       ├── index.css
+│       ├── MapView.jsx            # 高德地图展示行程线路
+│       ├── mapLoader.js           # 高德地图 SDK 加载与缓存逻辑
+│       ├── BudgetPanel.jsx        # 预算管理与记账界面
+│       ├── Login.jsx              # Supabase 认证入口
+│       ├── audioUtils.js          # 浏览器录音 & 音频处理
+│       └── assets/
+│           └── react.svg
+├── docker/
+│   ├── Dockerfile.backend         # FastAPI 镜像构建文件
+│   └── Dockerfile.frontend        # 前端静态资源构建文件
+├── docker-compose.yml             # 一键启动编排配置
 └── README.md
 ```
 
