@@ -53,26 +53,26 @@ ai-travel-planner/
 
 ## 快速开始
 
-### 启动后端
+### Docker 一键启动
+
+1. 准备环境变量：
+   - 将 `backend/env.example` 复制为 `backend/.env`，并按 PDF 中提供的值填写 Supabase、DeepSeek、科大讯飞等密钥。
+   - 将 `frontend/env.example` 复制为 `frontend/.env`，填入高德地图 Web Key（`VITE_AMAP_KEY`）。
+2. 确保本机已安装 Docker（包含 Docker Compose 插件）。
+3. 运行：
 
 ```bash
-cd backend
-pip install -r requirements.txt
-cd ..
-uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+docker compose up --build
 ```
 
-健康检查：访问 `http://localhost:8000/`
+4. 浏览器访问 `http://localhost:5173`，后端 API 位于 `http://localhost:8000`。
 
-### 启动前端
+停止服务可执行：
 
 ```bash
-cd frontend
-npm install
-npm run dev
+docker compose down
 ```
 
-打开浏览器访问 `http://localhost:5173`
 
 ## 使用说明
 

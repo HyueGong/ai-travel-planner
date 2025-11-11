@@ -4,8 +4,8 @@ from pydantic import BaseModel, Field
 from supabase import create_client
 from dotenv import load_dotenv
 import os
-from xf_asr import transcribe_audio_bytes
-from llm import generate_structured_travel_plan
+from .xf_asr import transcribe_audio_bytes
+from .llm import generate_structured_travel_plan
 from typing import Optional, List, Dict
 from decimal import Decimal, InvalidOperation
 import re
