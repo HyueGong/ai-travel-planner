@@ -1,0 +1,34 @@
+name: Push to ACR Personal Edition
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # 允许手动运行
+
+env:
+  ACR_REGISTRY: crpi-ku07xl4d7pm543bf.cn-hangzhou.personal.cr.aliyuncs.com
+  NAMESPACE: hyuegong
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to ACR Personal Registry
+        run: |
+          echo "${{ secrets.ACR_PASSWORD }}" | docker login \
+            ${{ env.ACR_REGISTRY }} \
+            --username "${{ secrets.ACR_USERNAME }}" \
+            --password-stdin
+
+      - name: Build and push backend image
+        run: |
+          docker build -t ${{ env.ACR_REGISTRY }}/${{ env.NAMESPACE }}/ai-travel-planner-backend:latest ./backend
+          docker push ${{ env.ACR_REGISTRY }}/${{ env.NAMESPACE }}/ai-travel-planner-backend:latest
+
+      - name: Build and push frontend image
+        run: |
+          docker build -t ${{ env.ACR_REGISTRY }}/${{ env.NAMESPACE }}/ai-travel-planner-frontend:latest ./frontend
+          docker push ${{ env.ACR_REGISTRY }}/${{ env.NAMESPACE }}/ai-travel-planner-frontend:latest

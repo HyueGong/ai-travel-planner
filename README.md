@@ -79,9 +79,9 @@ docker compose up --build
 docker compose down
 ```
 
-### 方式二：直接运行预构建镜像（无需构建）
+### 方式二：直接运行预构建镜像（推荐）
 
-1. 创建 `.env` 文件（同上）
+1. 创建 `.env` 文件（含 DeepSeek、讯飞、Supabase Key）
 2. 启动服务：
 
 ```bash
@@ -90,13 +90,13 @@ docker run -d \
   --name ai-travel-backend \
   -p 8000:8000 \
   --env-file .env \
-  registry.cn-hangzhou.aliyuncs.com/hyuegong/ai-travel-planner-backend:latest
+  crpi-ku07xl4d7pm543bf.cn-hangzhou.personal.cr.aliyuncs.com/hyuegong/ai-travel-planner-backend:latest
 
 # 启动前端
 docker run -d \
   --name ai-travel-frontend \
   -p 80:80 \
-  registry.cn-hangzhou.aliyuncs.com/hyuegong/ai-travel-planner-frontend:latest
+  crpi-ku07xl4d7pm543bf.cn-hangzhou.personal.cr.aliyuncs.com/hyuegong/ai-travel-planner-frontend:latest
 ```
 
 ## 使用说明
