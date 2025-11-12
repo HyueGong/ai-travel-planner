@@ -59,7 +59,7 @@ ai-travel-planner/
 
 ## 快速开始
 
-### Docker 一键启动
+### 方式一： Docker 一键启动
 
 1. 准备环境变量：
    - 将 `backend/env.example` 复制为 `backend/.env`，并按 PDF 中提供的值填写 Supabase、DeepSeek、科大讯飞等密钥。
@@ -79,6 +79,25 @@ docker compose up --build
 docker compose down
 ```
 
+### 方式二：直接运行预构建镜像（无需构建）
+
+1. 创建 `.env` 文件（同上）
+2. 启动服务：
+
+```bash
+# 启动后端
+docker run -d \
+  --name ai-travel-backend \
+  -p 8000:8000 \
+  --env-file .env \
+  registry.cn-hangzhou.aliyuncs.com/hyuegong/ai-travel-planner-backend:latest
+
+# 启动前端
+docker run -d \
+  --name ai-travel-frontend \
+  -p 80:80 \
+  registry.cn-hangzhou.aliyuncs.com/hyuegong/ai-travel-planner-frontend:latest
+```
 
 ## 使用说明
 

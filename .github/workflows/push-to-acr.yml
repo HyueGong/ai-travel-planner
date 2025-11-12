@@ -1,0 +1,33 @@
+name: Push Docker Image to ACR
+
+on:
+  push:
+    branches: [ main ]  # 仅 main 分支触发
+  workflow_dispatch:    # 允许手动触发
+
+jobs:
+  push-to-registry:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Alibaba Cloud Container Registry
+        uses: aliyun/acr-login@v1
+        with:
+          region-id: "cn-hangzhou"
+          access-key-id: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+          access-key-secret: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+
+      - name: Build and push backend image
+        run: |
+          docker build -t registry.cn-hangzhou.aliyuncs.com/hyuegong/ai-travel-planner-backend:latest ./backend
+          docker push registry.cn-hangzhou.aliyuncs.com/hyuegong/ai-travel-planner-backend:latest
+
+      - name: Build and push frontend image
+        run: |
+          docker build -t registry.cn-hangzhou.aliyuncs.com/hyuegong/ai-travel-planner-frontend:latest ./frontend
+          docker push registry.cn-hangzhou.aliyuncs.com/hyuegong/ai-travel-planner-frontend:latest
