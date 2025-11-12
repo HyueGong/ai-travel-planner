@@ -31,6 +31,9 @@ ai-travel-planner/
 │   ├── xf_asr.py                  # 讯飞实时语音识别封装
 │   ├── requirements.txt           # 后端依赖
 │   └── env.example                # 后端环境变量示例
+├── docker/                        # Docker 构建文件
+│   ├── Dockerfile.backend         # FastAPI 镜像构建文件
+│   └── Dockerfile.frontend        # 前端静态资源构建文件
 ├── frontend/                      # React + Vite 前端
 │   ├── package.json
 │   ├── vite.config.js
@@ -49,9 +52,10 @@ ai-travel-planner/
 │       ├── audioUtils.js          # 浏览器录音 & 音频处理
 │       └── assets/
 │           └── react.svg
-├── docker/
-│   ├── Dockerfile.backend         # FastAPI 镜像构建文件
-│   └── Dockerfile.frontend        # 前端静态资源构建文件
+├── .github/
+│   └── workflows/
+│       └── push-to-acr-personal.yml # GitHub Actions 自动推送镜像
+├── .gitignore
 ├── docker-compose.yml             # 一键启动编排配置
 └── README.md
 ```

@@ -1,9 +1,10 @@
+# .github/workflows/push-to-acr-personal.yml
 name: Push to ACR Personal Edition
 
 on:
   push:
     branches: [ main ]
-  workflow_dispatch:  # 允许手动运行
+  workflow_dispatch:
 
 env:
   ACR_REGISTRY: crpi-ku07xl4d7pm543bf.cn-hangzhou.personal.cr.aliyuncs.com
@@ -25,10 +26,10 @@ jobs:
 
       - name: Build and push backend image
         run: |
-          docker build -t ${{ env.ACR_REGISTRY }}/${{ env.NAMESPACE }}/ai-travel-planner-backend:latest ./backend
+          docker build -f docker/Dockerfile.backend -t ${{ env.ACR_REGISTRY }}/${{ env.NAMESPACE }}/ai-travel-planner-backend:latest .
           docker push ${{ env.ACR_REGISTRY }}/${{ env.NAMESPACE }}/ai-travel-planner-backend:latest
 
       - name: Build and push frontend image
         run: |
-          docker build -t ${{ env.ACR_REGISTRY }}/${{ env.NAMESPACE }}/ai-travel-planner-frontend:latest ./frontend
+          docker build -f docker/Dockerfile.frontend -t ${{ env.ACR_REGISTRY }}/${{ env.NAMESPACE }}/ai-travel-planner-frontend:latest .
           docker push ${{ env.ACR_REGISTRY }}/${{ env.NAMESPACE }}/ai-travel-planner-frontend:latest
